@@ -8,7 +8,7 @@ type Props = {
     errors: FieldErrors<FieldValues>
 }
 
-function AccountDetailsForm({ errors, register }: Props) {
+function AccountDetailsForm({ errors, register }: Props)  {
     return (
         <>
             <h2 className="text-gravel md:text-4xl font-bold">Account details</h2>
