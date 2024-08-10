@@ -64,6 +64,9 @@ model Billings {
   credits Int     @default(10)
   User    User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId  String? @unique @db.Uuid
+  razorpayOrderId   String?
+  razorpayPaymentId String?
+  status            String  @default("inactive")
 }
 
 model HelpDesk {

@@ -2,58 +2,37 @@
 
 import { client } from '@/lib/prisma'
 import { currentUser } from '@clerk/nextjs'
-import Stripe from 'stripe'
+import { razorpay } from '@/lib/razorpay'
+import { Plans } from '@prisma/client'
 
-const stripe = new Stripe(process.env.STRIPE_SECRET!, {
-    typescript: true,
-    apiVersion: '2024-06-20',
-})
-
-export const onCreateCustomerPaymentIntentSecret = async (
-    amount: number,
-    stripeId: string
-) => {
-    try {
-        const paymentIntent = await stripe.paymentIntents.create(
-            {
-                currency: 'usd',
-                amount: amount * 100,
-                automatic_payment_methods: {
-                    enabled: true,
-                },
-            },
-            { stripeAccount: stripeId }
-        )
-
-        if (paymentIntent) {
-            return { secret: paymentIntent.client_secret }
-        }
-    } catch (error) {
-        console.log(error)
-    }
-}
-
-export const onUpdateSubscription = async (
-    plan: 'STANDARD' | 'PRO' | 'ULTIMATE'
-) => {
+export const onUpdateSubscription = async (plan: Plans) => {
     try {
         const user = await currentUser()
         if (!user) return
+
+        const credits = plan === 'PRO' ? 50 : plan === 'ULTIMATE' ? 500 : 10
+
         const update = await client.user.update({
             where: {
                 clerkId: user.id,
             },
             data: {
                 subscription: {
-                    update: {
-                        data: {
+                    upsert: {
+                        create: {
                             plan,
-                            credits: plan == 'PRO' ? 50 : plan == 'ULTIMATE' ? 500 : 10,
+                            credits,
+                            status: 'active',
+                        },
+                        update: {
+                            plan,
+                            credits,
+                            status: 'active',
                         },
                     },
                 },
             },
-            select: {
+            include: {
                 subscription: {
                     select: {
                         plan: true,
@@ -61,6 +40,7 @@ export const onUpdateSubscription = async (
                 },
             },
         })
+
         if (update) {
             return {
                 status: 200,
@@ -73,33 +53,85 @@ export const onUpdateSubscription = async (
     }
 }
 
-const setPlanAmount = (item: 'STANDARD' | 'PRO' | 'ULTIMATE') => {
-    if (item == 'PRO') {
-        return 1500
+const setPlanAmount = (plan: Plans) => {
+    switch (plan) {
+        case 'PRO':
+            return 1500
+        case 'ULTIMATE':
+            return 3500
+        default:
+            return 0
     }
-    if (item == 'ULTIMATE') {
-        return 3500
-    }
-    return 0
 }
 
-export const onGetStripeClientSecret = async (
-    item: 'STANDARD' | 'PRO' | 'ULTIMATE'
-) => {
+export const onCreateRazorpayOrder = async (plan: Plans) => {
     try {
-        const amount = setPlanAmount(item)
-        const paymentIntent = await stripe.paymentIntents.create({
-            currency: 'usd',
-            amount: amount,
-            automatic_payment_methods: {
-                enabled: true,
+        const user = await currentUser()
+        if (!user) throw new Error('User not found')
+
+        const amount = setPlanAmount(plan)
+        const order = await razorpay.orders.create({
+            amount: amount * 100, // Razorpay expects amount in paise
+            currency: 'INR',
+            receipt: `receipt_${Date.now()}`,
+            notes: {
+                plan: plan
+            }
+        })
+
+        await client.billings.upsert({
+            where: { userId: user.id },
+            create: {
+                userId: user.id,
+                razorpayOrderId: order.id,
+                plan,
+                status: 'pending',
+            },
+            update: {
+                razorpayOrderId: order.id,
+                plan,
+                status: 'pending',
             },
         })
 
-        if (paymentIntent) {
-            return { secret: paymentIntent.client_secret }
-        }
+        return { orderId: order.id }
     } catch (error) {
         console.log(error)
+        throw error
     }
+}
+
+export const onVerifyRazorpayPayment = async (
+    razorpayOrderId: string,
+    razorpayPaymentId: string,
+    razorpaySignature: string
+) => {
+    const crypto = require('crypto')
+    const shasum = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET!)
+    shasum.update(`${razorpayOrderId}|${razorpayPaymentId}`)
+    const digest = shasum.digest('hex')
+
+    if (digest !== razorpaySignature) {
+        throw new Error('Transaction not legit!')
+    }
+
+    const user = await currentUser()
+    if (!user) throw new Error('User not found')
+
+    const billing = await client.billings.findUnique({
+        where: { userId: user.id },
+    })
+
+    if (!billing) throw new Error('Billing not found')
+
+    // Update the billing record and user subscription
+    await client.billings.update({
+        where: { userId: user.id },
+        data: {
+            razorpayPaymentId,
+            status: 'active',
+        },
+    })
+
+    return onUpdateSubscription(billing.plan)
 }
