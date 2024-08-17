@@ -66,8 +66,15 @@ const setPlanAmount = (plan: Plans) => {
 
 export const onCreateRazorpayOrder = async (plan: Plans) => {
     try {
-        const user = await currentUser()
-        if (!user) throw new Error('User not found')
+        // const user = await currentUser()
+        // if (!user) throw new Error('User not found')
+        const clerkUser = await currentUser()
+        if (!clerkUser) throw new Error('User not found')
+        // Fetch the user from your database using the Clerk ID
+        const dbUser = await client.user.findUnique({
+            where: { clerkId: clerkUser.id },
+        })
+        if (!dbUser) throw new Error('User not found in database')
 
         const amount = setPlanAmount(plan)
         const order = await razorpay.orders.create({
@@ -80,9 +87,9 @@ export const onCreateRazorpayOrder = async (plan: Plans) => {
         })
 
         await client.billings.upsert({
-            where: { userId: user.id },
+            where: { userId: dbUser.id },
             create: {
-                userId: user.id,
+                userId: dbUser.id,
                 razorpayOrderId: order.id,
                 plan,
                 status: 'pending',
@@ -115,23 +122,51 @@ export const onVerifyRazorpayPayment = async (
         throw new Error('Transaction not legit!')
     }
 
-    const user = await currentUser()
-    if (!user) throw new Error('User not found')
+    // const user = await currentUser()
+    // if (!user) throw new Error('User not found')
+
+    // const billing = await client.billings.findUnique({
+    //     where: { userId: user.id },
+    // })
+
+    // if (!billing) throw new Error('Billing not found')
+
+    const clerkUser = await currentUser()
+    if (!clerkUser) throw new Error('User not found')
+
+    const dbUser = await client.user.findUnique({
+        where: { clerkId: clerkUser.id },
+    })
+    if (!dbUser) throw new Error('User not found in database')
 
     const billing = await client.billings.findUnique({
-        where: { userId: user.id },
+        where: { userId: dbUser.id },
     })
 
     if (!billing) throw new Error('Billing not found')
 
     // Update the billing record and user subscription
-    await client.billings.update({
-        where: { userId: user.id },
-        data: {
-            razorpayPaymentId,
-            status: 'active',
-        },
-    })
+    // await client.billings.update({
+    //     where: { userId: dbUser.id },
+    //     data: {
+    //         razorpayPaymentId,
+    //         status: 'active',
+    //     },
+    // })
+    // return onUpdateSubscription(billing.plan)
 
-    return onUpdateSubscription(billing.plan)
+    // Only update if payment is verified
+    if (billing.status !== 'active') {
+        await client.billings.update({
+            where: { userId: dbUser.id },
+            data: {
+                razorpayPaymentId,
+                status: 'active',
+            },
+        });
+
+        return onUpdateSubscription(billing.plan);
+    } else {
+        return { message: 'Subscription is already active' };
+    }
 }

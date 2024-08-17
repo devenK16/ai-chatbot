@@ -1,3 +1,4 @@
+'use client'
 import React from 'react'
 import useSubscriptions from '@/hooks/billing/use-billing'
 import { Button } from '@/components/ui/button'
